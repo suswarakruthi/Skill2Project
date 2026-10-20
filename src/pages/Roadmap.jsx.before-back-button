@@ -1,0 +1,183 @@
+﻿import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { supabase } from "../lib/supabaseClient";
+
+const paths = {
+  "Web Development": ["Learn HTML structure", "Style a page with CSS", "Build interactive features with JavaScript", "Create a React application", "Build and publish a complete project"],
+  "Python & AI": ["Learn Python variables and data types", "Practice conditions, loops and functions", "Work with lists, dictionaries and files", "Learn data handling basics", "Build a Python or AI mini-project"],
+  "Java & DSA": ["Review Java syntax and OOP", "Practice arrays and strings", "Learn linked lists, stacks and queues", "Practice trees, graphs and sorting", "Solve coding problems and build a project"],
+  "App Development": ["Learn programming fundamentals", "Understand Flutter widgets", "Build layouts and navigation", "Connect an API and manage state", "Build and test a complete app"]
+};
+
+const KEY = "skill2project-learning-roadmap";
+
+function load() {
+  try {
+    return JSON.parse(localStorage.getItem(KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+export default function Roadmap() {
+  const [goal, setGoal] = useState("Web Development");
+  const [progress, setProgress] = useState(load);
+  const [userId, setUserId] = useState(null);
+  const [message, setMessage] = useState("Loading your learning progress...");
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadProgress() {
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession();
+
+      if (sessionError) throw sessionError;
+
+      const user = sessionData?.session?.user;
+
+      if (!user) {
+        if (active) {
+          setMessage("Progress is saved in this browser. Sign in to sync it with Supabase.");
+        }
+        return;
+      }
+
+      if (active) setUserId(user.id);
+
+      const { data: rows, error } = await supabase
+        .from("learning_progress")
+        .select("learning_path,completed_steps")
+        .eq("user_id", user.id);
+
+      if (error) throw error;
+      if (!active) return;
+
+      const cloudProgress = {};
+      (rows || []).forEach((row) => {
+        cloudProgress[row.learning_path] = row.completed_steps || [];
+      });
+
+      // Import older browser progress only when no cloud record exists for that path.
+      const localProgress = load();
+      const merged = { ...localProgress, ...cloudProgress };
+
+      for (const [pathName, completedSteps] of Object.entries(localProgress)) {
+        if (!Object.prototype.hasOwnProperty.call(cloudProgress, pathName) &&
+            Array.isArray(completedSteps) && completedSteps.length) {
+          const { error: saveError } = await supabase
+            .from("learning_progress")
+            .upsert({
+              user_id: user.id,
+              learning_path: pathName,
+              completed_steps: completedSteps,
+              updated_at: new Date().toISOString()
+            }, { onConflict: "user_id,learning_path" });
+
+          if (saveError) throw saveError;
+        }
+      }
+
+      if (!active) return;
+      setProgress(merged);
+      localStorage.setItem(KEY, JSON.stringify(merged));
+      setMessage("Connected to Supabase — your roadmap progress is synced.");
+    }
+
+    loadProgress().catch((error) => {
+      if (active) {
+        setMessage("Could not sync roadmap: " + (error.message || "Please try again."));
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const tasks = paths[goal];
+  const done = progress[goal] || [];
+  const percent = Math.round(done.length / tasks.length * 100);
+
+  async function saveProgress(updated) {
+    setProgress(updated);
+    localStorage.setItem(KEY, JSON.stringify(updated));
+
+    if (!userId) {
+      setMessage("Saved in this browser. Sign in to sync progress across devices.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("learning_progress")
+      .upsert({
+        user_id: userId,
+        learning_path: goal,
+        completed_steps: updated[goal] || [],
+        updated_at: new Date().toISOString()
+      }, { onConflict: "user_id,learning_path" });
+
+    if (error) {
+      setMessage("Cloud save failed: " + error.message + ". Your browser progress is still saved.");
+      return;
+    }
+
+    setMessage("Roadmap progress saved to Supabase.");
+  }
+
+  function toggle(index) {
+    const updatedSteps = done.includes(index)
+      ? done.filter((i) => i !== index)
+      : [...done, index];
+
+    saveProgress({ ...progress, [goal]: updatedSteps });
+  }
+
+  function reset() {
+    saveProgress({ ...progress, [goal]: [] });
+  }
+
+  return (
+    <main style={s.page}>
+      <Link to="/dashboard" style={s.link}>← Dashboard</Link>
+      <h1>📈 Learning Roadmap</h1>
+      <p style={s.muted}>Choose a goal, follow the milestones and track your progress.</p>
+
+      <section style={s.panel}>
+        <label htmlFor="goal">Choose your learning path</label>
+        <select id="goal" value={goal} onChange={(e) => setGoal(e.target.value)} style={s.input}>
+          {Object.keys(paths).map((path) => <option key={path}>{path}</option>)}
+        </select>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 18 }}>
+          <strong>Your progress</strong><strong>{percent}%</strong>
+        </div>
+        <div style={{ height: 10, background: "#30284b", borderRadius: 20, overflow: "hidden", marginTop: 10 }}>
+          <div style={{ height: "100%", width: percent + "%", background: "linear-gradient(90deg,#925cff,#35dfff)", transition: "width .2s" }} />
+        </div>
+        <p style={s.muted}>{done.length} of {tasks.length} milestones completed</p>
+      </section>
+
+      {tasks.map((task, index) => (
+        <label key={task} style={{ ...s.panel, display: "flex", gap: 14, alignItems: "start", cursor: "pointer", opacity: done.includes(index) ? 0.75 : 1 }}>
+          <input type="checkbox" checked={done.includes(index)} onChange={() => toggle(index)} style={{ marginTop: 5, accentColor: "#925cff", width: 18, height: 18 }} />
+          <span>
+            <strong>Step {index + 1}</strong><br />
+            <span style={{ color: done.includes(index) ? "#76e6bd" : "#f7f5ff", textDecoration: done.includes(index) ? "line-through" : "none" }}>{task}</span>
+          </span>
+        </label>
+      ))}
+
+      <button onClick={reset} style={s.button}>Reset this roadmap</button>
+      <p role="status" style={s.muted}>{message}</p>
+    </main>
+  );
+}
+
+const s = {
+  page: { minHeight: "100vh", padding: "36px 20px", maxWidth: 850, margin: "auto", color: "#f7f5ff", fontFamily: "Inter,system-ui,sans-serif", background: "#08051c" },
+  link: { color: "#b8a5ff", textDecoration: "none" },
+  muted: { color: "#bcb5d8", lineHeight: 1.6 },
+  panel: { padding: 22, margin: "16px 0", borderRadius: 18, border: "1px solid #9d8aff50", background: "#15112de8" },
+  input: { display: "block", width: "100%", padding: 12, marginTop: 12, borderRadius: 10, border: "1px solid #544779", background: "#0d0a20", color: "white" },
+  button: { padding: "12px 18px", border: 0, borderRadius: 10, background: "#925cff", color: "white", fontWeight: 700, cursor: "pointer" }
+};

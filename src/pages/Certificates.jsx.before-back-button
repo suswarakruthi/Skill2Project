@@ -1,0 +1,243 @@
+﻿import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { supabase } from "../lib/supabaseClient";
+
+const KEY = "skill2project-certificates";
+
+const readItems = () => {
+  try {
+    return JSON.parse(localStorage.getItem(KEY) || "[]");
+  } catch {
+    return [];
+  }
+};
+
+export default function Certificates() {
+  const [items, setItems] = useState(readItems);
+  const [title, setTitle] = useState("");
+  const [issuer, setIssuer] = useState("");
+  const [date, setDate] = useState("");
+  const [userId, setUserId] = useState(null);
+  const [message, setMessage] = useState("Loading certificates...");
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadCertificates() {
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession();
+
+      if (sessionError) throw sessionError;
+
+      const user = sessionData?.session?.user;
+
+      if (!user) {
+        if (active) {
+          setMessage("Sign in to sync certificates with your account.");
+        }
+        return;
+      }
+
+      if (active) setUserId(user.id);
+
+      const { data, error } = await supabase
+        .from("student_certificates")
+        .select("id,title,issuer,completion_date,created_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+      if (!active) return;
+
+      if (data?.length) {
+        const mapped = data.map((row) => ({
+          id: row.id,
+          title: row.title,
+          issuer: row.issuer || "",
+          date: row.completion_date || "",
+          createdAt: row.created_at,
+        }));
+
+        setItems(mapped);
+        localStorage.setItem(KEY, JSON.stringify(mapped));
+      } else {
+        const localItems = readItems();
+
+        for (const item of localItems) {
+          const { error: insertError } = await supabase
+            .from("student_certificates")
+            .insert({
+              user_id: user.id,
+              title: item.title || "Untitled certificate",
+              issuer: item.issuer || "",
+              completion_date: item.date || null,
+            });
+
+          if (insertError) throw insertError;
+        }
+
+        if (localItems.length) {
+          const { data: migrated, error: migrateError } = await supabase
+            .from("student_certificates")
+            .select("id,title,issuer,completion_date,created_at")
+            .eq("user_id", user.id)
+            .order("created_at", { ascending: false });
+
+          if (migrateError) throw migrateError;
+          if (!active) return;
+
+          const mapped = (migrated || []).map((row) => ({
+            id: row.id,
+            title: row.title,
+            issuer: row.issuer || "",
+            date: row.completion_date || "",
+            createdAt: row.created_at,
+          }));
+
+          setItems(mapped);
+          localStorage.setItem(KEY, JSON.stringify(mapped));
+        } else {
+          setItems([]);
+          localStorage.setItem(KEY, "[]");
+        }
+      }
+
+      if (active) {
+        setMessage("Connected to Supabase — certificates sync with your account.");
+      }
+    }
+
+    loadCertificates().catch((error) => {
+      if (active) {
+        setMessage("Certificate sync error: " + (error.message || "Please try again."));
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function add(event) {
+    event.preventDefault();
+    if (!title.trim()) return;
+
+    const newItem = {
+      title: title.trim(),
+      issuer: issuer.trim(),
+      completion_date: date || null,
+    };
+
+    if (userId) {
+      const { data, error } = await supabase
+        .from("student_certificates")
+        .insert({ ...newItem, user_id: userId })
+        .select("id,title,issuer,completion_date,created_at")
+        .single();
+
+      if (error) {
+        setMessage("Could not save certificate: " + error.message);
+        return;
+      }
+
+      const item = {
+        id: data.id,
+        title: data.title,
+        issuer: data.issuer || "",
+        date: data.completion_date || "",
+        createdAt: data.created_at,
+      };
+
+      const next = [item, ...items];
+      setItems(next);
+      localStorage.setItem(KEY, JSON.stringify(next));
+      setMessage("Certificate saved to Supabase successfully.");
+    } else {
+      const item = {
+        id: crypto.randomUUID(),
+        ...newItem,
+        date: newItem.completion_date || "",
+        createdAt: new Date().toISOString(),
+      };
+      const next = [item, ...items];
+      setItems(next);
+      localStorage.setItem(KEY, JSON.stringify(next));
+      setMessage("Saved in this browser. Sign in to sync with Supabase.");
+    }
+
+    setTitle("");
+    setIssuer("");
+    setDate("");
+  }
+
+  async function removeCertificate(item) {
+    if (userId) {
+      const { error } = await supabase
+        .from("student_certificates")
+        .delete()
+        .eq("id", item.id)
+        .eq("user_id", userId);
+
+      if (error) {
+        setMessage("Could not delete certificate: " + error.message);
+        return;
+      }
+    }
+
+    const next = items.filter((current) => current.id !== item.id);
+    setItems(next);
+    localStorage.setItem(KEY, JSON.stringify(next));
+    setMessage(userId ? "Certificate deleted from Supabase." : "Certificate deleted from this browser.");
+  }
+
+  return (
+    <main style={styles.page}>
+      <Link to="/dashboard" style={styles.link}>← Dashboard</Link>
+      <h1>🏆 Certificates & Achievements</h1>
+      <p style={styles.muted}>Keep your learning milestones in one place.</p>
+
+      <form onSubmit={add} style={styles.panel}>
+        <h2>Add a certificate</h2>
+        <input required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Certificate or achievement name" style={styles.input} />
+        <input value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="Issued by (course / organization)" style={styles.input} />
+        <label style={styles.muted}>Completion date (optional)</label>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={styles.input} />
+        <button style={styles.button}>+ Add certificate</button>
+      </form>
+
+      <p role="status" style={styles.muted}>{message}</p>
+      <h2>Your achievements ({items.length})</h2>
+
+      {items.length === 0 ? (
+        <p style={styles.panel}>No certificates yet. Add your first achievement above!</p>
+      ) : (
+        items.map((item) => (
+          <article key={item.id} style={styles.panel}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start" }}>
+              <div>
+                <h3 style={{ marginTop: 0 }}>{item.title}</h3>
+                <p style={styles.muted}>
+                  {item.issuer || "Issuer not specified"}
+                  {item.date ? " · " + item.date : ""}
+                </p>
+              </div>
+              <button type="button" onClick={() => removeCertificate(item)} style={styles.delete}>
+                Delete
+              </button>
+            </div>
+          </article>
+        ))
+      )}
+    </main>
+  );
+}
+
+const styles = {
+  page: { minHeight: "100vh", padding: "36px 20px", maxWidth: 850, margin: "auto", color: "#f7f5ff", fontFamily: "Inter,system-ui,sans-serif", background: "#08051c" },
+  link: { color: "#b8a5ff", textDecoration: "none" },
+  muted: { color: "#bcb5d8", lineHeight: 1.6 },
+  panel: { padding: 22, margin: "20px 0", borderRadius: 18, border: "1px solid #9d8aff50", background: "#15112de8" },
+  input: { display: "block", boxSizing: "border-box", width: "100%", padding: 13, margin: "12px 0", borderRadius: 10, border: "1px solid #544779", background: "#0d0a20", color: "white" },
+  button: { padding: "12px 18px", border: 0, borderRadius: 10, background: "#925cff", color: "white", fontWeight: 700, cursor: "pointer" },
+  delete: { padding: "8px 12px", borderRadius: 8, border: "1px solid #ff7b91", background: "transparent", color: "#ff9eae", cursor: "pointer" },
+};

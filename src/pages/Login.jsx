@@ -13,8 +13,8 @@ function Login() {
     event.preventDefault();
     setError("");
 
-    const email = event.currentTarget.email.value.trim();
-    const password = event.currentTarget.password.value;
+    const email = event.currentTarget.elements.namedItem("email").value.trim();
+    const password = event.currentTarget.elements.namedItem("password").value;
 
     if (!email || !password) {
       setError("Please enter your email and password.");
